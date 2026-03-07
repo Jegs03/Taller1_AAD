@@ -1,0 +1,147 @@
+---
+title: "Taller1"
+output: html_document
+---
+
+# Cargar la librería
+
+
+```{r}
+library(glmnet)
+```
+
+# 1. Cargar los datos
+
+Asumimos que los datos están separados por tabulaciones o espacios. Ajusta 'sep' si es un CSV.
+
+
+```{r}
+datos <- read.csv("taller1.txt")
+```
+
+
+# Punto 1
+Sí, existe una multicolinealidad estructural y perfecta en los datos. Esto se debe a que el número de variables predictoras, correspondiente a los 5000 genes, es estrictamente mayor que el número de observaciones, que son las 1200 líneas celulares. En este escenario de alta dimensionalidad (p>n), la matriz de diseño no puede tener rango completo por columnas, lo que garantiza matemáticamente la existencia de dependencias lineales entre ellas. Como consecuencia directa, la matriz XTX se vuelve singular (no invertible), provocando que el estimador tradicional de Mínimos Cuadrados Ordinarios colapse al carecer de una solución única y haciendo estrictamente necesario el uso de modelos penalizados.
+# Punto 2
+Separar variables predictoras 
+```{r}
+X <- as.matrix(datos[, -1]) 
+Y <- datos$y
+```
+Fijamos la semilla para garantizar la reproducibilidad
+```{r}
+set.seed(18)
+```
+Generamos 1000 índices aleatorios del 1 al 1200
+```{r}
+indices_entrenamiento <- sample(1:nrow(X), 1000)
+```
+Creamos los conjuntos de Entrenamiento
+```{r}
+X_train <- X[indices_entrenamiento, ]
+Y_train <- Y[indices_entrenamiento]
+```
+Creamos los conjuntos de Prueba
+```{r}
+X_test <- X[-indices_entrenamiento, ]
+Y_test <- Y[-indices_entrenamiento]
+```
+# Punto 3
+Validación cruzada para Regresión Ridge (alpha = 0)
+```{r}
+set.seed(18)
+cv_ridge <- cv.glmnet(x = X_train, y = Y_train, alpha = 0, nfolds = 10)
+```
+
+Extraemos el lambda que minimiza el ECM
+```{r}
+lambda_r <- cv_ridge$lambda.min
+cat("El valor óptimo de lambda_r (Ridge) es:", lambda_r, "\n")
+```
+
+Validación cruzada para Regresión Lasso (alpha = 1)
+```{r}
+set.seed(18) 
+cv_lasso <- cv.glmnet(x = X_train, y = Y_train, alpha = 1, nfolds = 10)
+```
+
+Extraemos el lambda que minimiza el ECM
+```{r}
+lambda_l <- cv_lasso$lambda.min
+cat("El valor óptimo de lambda_l (Lasso) es:", lambda_l, "\n")
+```
+# Punto 4
+
+Ajuste del modelo de regresión Ridge (alpha = 0) con el lambda estimado
+```{r}
+modelo_ridge <- glmnet(x = X_train, y = Y_train, alpha = 0, lambda = lambda_r)
+```
+
+Ajuste del modelo de regresión Lasso (alpha = 1) con el lambda estimado
+```{r}
+modelo_lasso <- glmnet(x = X_train, y = Y_train, alpha = 1, lambda = lambda_l)
+```
+
+# Punto 5
+Calcular las predicciones para el conjunto de prueba usando Ridge
+```{r}
+pred_ridge <- predict(modelo_ridge, s = lambda_r, newx = X_test)
+```
+
+Calcular el Error Cuadrático Medio (ECM) para Ridge
+```{r}
+ecm_ridge <- mean((Y_test - pred_ridge)^2)
+cat("El ECM de Ridge en los datos de prueba es:", ecm_ridge, "\n")
+```
+
+Calcular las predicciones para el conjunto de prueba usando Lasso
+```{r}
+pred_lasso <- predict(modelo_lasso, s = lambda_l, newx = X_test)
+```
+
+Calcular el Error Cuadrático Medio (ECM) para Lasso
+```{r}
+ecm_lasso <- mean((Y_test - pred_lasso)^2)
+cat("El ECM de Lasso en los datos de prueba es:", ecm_lasso, "\n")
+```
+
+Determinar el modelo más apropiado
+```{r}
+if(ecm_lasso < ecm_ridge) {
+  cat("\nConclusión: El modelo LASSO es el más apropiado para predicción ya que tiene un menor ECM.\n")
+  # Guardamos la selección para el siguiente punto
+  alpha_seleccionado <- 1 
+  lambda_seleccionado <- lambda_l
+} else {
+  cat("\nConclusión: El modelo RIDGE es el más apropiado para predicción ya que tiene un menor ECM.\n")
+  # Guardamos la selección para el siguiente punto
+  alpha_seleccionado <- 0
+  lambda_seleccionado <- lambda_r
+}
+```
+
+# Punto 6
+Ajuste del modelo final con todos los datos
+```{r}
+modelo_final <- glmnet(x = X, y = Y, alpha = alpha_seleccionado, lambda = lambda_seleccionado)
+
+cat("El modelo final ha sido ajustado exitosamente con los 1200 datos.\n")
+```
+
+# Punto 7
+
+Ajustamos el modelo con todos los datos y el alpha seleccionado para obtener la ruta completa
+```{r}
+modelo_trazas <- glmnet(x = X, y = Y, alpha = alpha_seleccionado)
+```
+
+Generamos la gráfica de las trazas
+```{r}
+plot(modelo_trazas, xvar = "lambda", label = TRUE, 
+     ylab = "Coeficientes", xlab = "Log(Lambda)",
+     main = paste("Trazas de los coeficientes (Alpha =", alpha_seleccionado, ")"))
+abline(v = log(lambda_seleccionado), col = "red", lty = 2, lwd = 2)
+```
+
+# Punto 8
+Dado el objetivo inicial de determinar qué genes son relevantes para predecir la efectividad del tratamiento anticancerígeno en 1200 líneas celulares, el estudio enfrentó un problema de alta dimensionalidad con multicolinealidad estructural (p>n). Para superarlo, se evaluaron modelos de regularización, siendo la regresión Lasso (α=1) la seleccionada por presentar el menor Error Cuadrático Medio en la validación con el conjunto de prueba. Gracias a la penalización L1​ propia de Lasso, el modelo logró realizar una selección activa de variables, reduciendo a cero los coeficientes de los genes no informativos. Esto permitió extraer una firma genómica específica, descartando el ruido de la gran mayoría de los 5000 genes originales y obteniendo un modelo robusto y parsimonioso para la predicción de la efectividad terapéutica.
