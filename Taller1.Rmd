@@ -1,16 +1,54 @@
 ---
-title: "Taller1"
-output: html_document
+title: "Análisis Avanzado de Datos: Taller 1"
+author: 
+  - "David Santiago Gómez León"
+  - "Juan Esteban Gonzalez Soto"
+date: "`r Sys.Date()`"
+classoption: titlepage #Fuerza una página de portada exclusiva
+output: 
+  pdf_document:
+    toc: false               # Apagamos el TOC automático para controlarlo #nosotros
+    toc_depth: 2             # Mostrará hasta subtítulos nivel 2
+    number_sections: false   # Acorde a títulos personalizados
+    highlight: tango         # Mantiene el coloreado elegante del código R
+    df_print: kable          # Imprime los dataframes como tablas elegantes de LaTeX
+geometry: margin=1in         # Márgenes profesionales de 1 pulgada
+urlcolor: blue               # Colorea los enlaces
 ---
 
-# Cargar la librería
+
+```{r setup, include=FALSE}
+#Configuración Global de Knitr para PDF
+# Este bloque es invisible (include=FALSE) pero dicta las reglas para todo el documento.
+knitr::opts_chunk$set(
+  echo = TRUE,          # Mostrar el código fuente
+  warning = FALSE,      # Bloquear advertencias
+  message = FALSE,      # Bloquear mensajes de carga de librerías
+  fig.align = 'center', # Centrar todas las gráficas
+  fig.width = 6,        # Ancho óptimo para PDF
+  fig.height = 4,       # Alto óptimo para PDF
+  tidy = TRUE,          # Envolver líneas largas de código
+  tidy.opts = list(width.cutoff = 60) # Cortar a los 60 caracteres
+)
+```
+
+\renewcommand{\contentsname}{Índice de Contenidos}
+\tableofcontents
+\newpage
+
+
+# 0. Preámbulo
 
 
 ```{r}
 library(glmnet)
+library(doParallel)
+library(ggplot2)   # Para gráficos avanzados
+library(broom)     # Para limpiar objetos de modelos
+library(dplyr)     # Para manipulación de datos
 ```
 
-# 1. Cargar los datos
+# 0.1. Cargar los datos
 
 Asumimos que los datos están separados por tabulaciones o espacios. Ajusta 'sep' si es un CSV.
 
@@ -20,128 +58,351 @@ datos <- read.csv("taller1.txt")
 ```
 
 
-# Punto 1
-Sí, existe una multicolinealidad estructural y perfecta en los datos. Esto se debe a que el número de variables predictoras, correspondiente a los 5000 genes, es estrictamente mayor que el número de observaciones, que son las 1200 líneas celulares. En este escenario de alta dimensionalidad (p>n), la matriz de diseño no puede tener rango completo por columnas, lo que garantiza matemáticamente la existencia de dependencias lineales entre ellas. Como consecuencia directa, la matriz XTX se vuelve singular (no invertible), provocando que el estimador tradicional de Mínimos Cuadrados Ordinarios colapse al carecer de una solución única y haciendo estrictamente necesario el uso de modelos penalizados.
-# Punto 2
-Separar variables predictoras 
+# 0.2. Contexto Analítico
+El presente estudio analiza el perfil genómico de 1200 líneas celulares con el objetivo de identificar cuáles de los 5000 genes secuenciados son relevantes para predecir la efectividad de un tratamiento anticancerígeno (variable respuesta continua).
+
+
+# 1. Análisis de Multicolinealidad Estructural (p > n)
+
+
+
+Sí, existe una multicolinealidad estructural severa. El conjunto de datos presenta un escenario de alta dimensionalidad donde el número de predictores ($p = 5000$ genes) excede estrictamente el número de observaciones ($n = 1200$ líneas celulares). Matemáticamente, esto implica que la matriz de diseño $X$ no tiene rango completo, haciendo que la matriz $X^TX$ sea singular (no invertible). En consecuencia, el estimador de Mínimos Cuadrados Ordinarios (MCO) carece de una solución única y colapsa, haciendo estrictamente imperativo el uso de métodos de regularización (como Ridge o LASSO) para inducir sesgo y reducir la varianza.
+
+# 2. Partición del Conjunto de Datos y Preprocesamiento
+
+Para evaluar la capacidad de generalización del modelo, se realiza una partición aleatoria reteniendo la semilla (`set.seed(18)`) para garantizar la reproducibilidad.
+
+
+* **Entrenamiento:** 1000 líneas celulares.
+
+
+* **Prueba:** 200 líneas celulares.
+
+**Nota Metodológica:** Para evitar el "Data Leakage" (fuga de información), la estandarización de las variables predictoras se realiza calculando la media y desviación estándar *únicamente* sobre el conjunto de entrenamiento, aplicando luego estos mismos parámetros al conjunto de prueba.
+
+
 ```{r}
+#Separar variables predictoras 
 X <- as.matrix(datos[, -1]) 
 Y <- datos$y
 ```
-Fijamos la semilla para garantizar la reproducibilidad
+
+
+
 ```{r}
+
+#Fijamos la semilla para garantizar la reproducibilidad
 set.seed(18)
 ```
-Generamos 1000 índices aleatorios del 1 al 1200
+
+
+
 ```{r}
+#Generamos 1000 índices aleatorios del 1 al 1200
 indices_entrenamiento <- sample(1:nrow(X), 1000)
 ```
-Creamos los conjuntos de Entrenamiento
+
+
+
 ```{r}
+#Creamos los conjuntos de Entrenamiento
 X_train <- X[indices_entrenamiento, ]
 Y_train <- Y[indices_entrenamiento]
 ```
-Creamos los conjuntos de Prueba
+
+Antes de generar los conjuntos de prueba, aplicamos la estandarización de los datos, de forma externa al dado por la libreria glmnet.
+
 ```{r}
+
+#La estandarizacion se realiza basada en los datos
+# de entrenamiento para evitar data leakage y #sesgar el poder predictivo del modelo
+
+mean_train <- apply(X_train,2, mean)
+sd_train <- apply(X_train, 2, sd)
+
+
+#Estandarizamos loa conjuntos de entrenamiento
+
+X_train <- scale(X_train, center = mean_train, scale= sd_train)
+
+
+```
+
+
+
+```{r}
+
+#Creamos los conjuntos de Prueba
+
 X_test <- X[-indices_entrenamiento, ]
 Y_test <- Y[-indices_entrenamiento]
+
+
+# Se estandariza el conjunto de entrenamiento #basado en los mismos parametros 
+#(Crucial para evaluacion insesgada)
+X_test <- scale(X_test, center = mean_train, scale = sd_train)
+
+# Estandarizamos todo el dataset para la evaluacion #en el Punto 6
+X_scaled <- scale(X, center = apply(X, 2, mean), scale = apply(X, 2, sd))
 ```
-# Punto 3
-Validación cruzada para Regresión Ridge (alpha = 0)
+
+
+
+# 3. Optimización de Hiperparámetros mediante Validación Cruzada
+
+
+Para determinar los valores óptimos de penalización ($\lambda_r$ para Ridge y $\lambda_l$ para LASSO), se utiliza **Validación Cruzada de 10 particiones (10-fold CV)** sobre los 1000 datos de entrenamiento. Este método es el más apropiado ya que evalúa el desempeño en subconjuntos de retención (validación externa al ajuste interno), minimizando el Error Cuadrático Medio (ECM). 
+
+Se seleccionará el hiperparámetro bajo la **Regla de 1 Error Estándar (`lambda.1se`)** para favorecer el modelo más parsimonioso (aquel que penaliza más variables sin perder capacidad predictiva significativa).
+
+
 ```{r}
 set.seed(18)
+
+num_cores = detectCores()-1
+
+registerDoParallel(cores = num_cores)
+
+#Validación cruzada para Regresión Ridge (alpha = 0).
+
 cv_ridge <- cv.glmnet(x = X_train, y = Y_train, alpha = 0, nfolds = 10)
 ```
 
-Extraemos el lambda que minimiza el ECM
+Extraemos el lambda que minimiza el ECM:
 ```{r}
-lambda_r <- cv_ridge$lambda.min
-cat("El valor óptimo de lambda_r (Ridge) es:", lambda_r, "\n")
+lambda_r <- cv_ridge$lambda.1se
+cat("El valor optimo de lambda_r (Ridge) es:", lambda_r, "\n")
 ```
 
-Validación cruzada para Regresión Lasso (alpha = 1)
+
 ```{r}
 set.seed(18) 
+
+#Validación cruzada para Regresión Lasso (alpha = 1)
 cv_lasso <- cv.glmnet(x = X_train, y = Y_train, alpha = 1, nfolds = 10)
 ```
 
-Extraemos el lambda que minimiza el ECM
+Extraemos el lambda que minimiza el ECM:
+
 ```{r}
-lambda_l <- cv_lasso$lambda.min
+lambda_l <- cv_lasso$lambda.1se
 cat("El valor óptimo de lambda_l (Lasso) es:", lambda_l, "\n")
 ```
-# Punto 4
 
-Ajuste del modelo de regresión Ridge (alpha = 0) con el lambda estimado
+# 4. Entrenamiento de Modelos Penalizados
+Utilizando los hiperparámetros óptimos $\lambda_{1se}$ calculados en la validación cruzada, se procede a ajustar los modelos Ridge ($\alpha = 0$) y LASSO ($\alpha = 1$) exclusivamente sobre el conjunto de 1000 observaciones de entrenamiento.
+
+Ajuste del modelo de regresión Ridge (alpha = 0) con el lambda estimado:
+
 ```{r}
 modelo_ridge <- glmnet(x = X_train, y = Y_train, alpha = 0, lambda = lambda_r)
 ```
 
-Ajuste del modelo de regresión Lasso (alpha = 1) con el lambda estimado
+Ajuste del modelo de regresión Lasso (alpha = 1) con el lambda estimado:
+
+
 ```{r}
 modelo_lasso <- glmnet(x = X_train, y = Y_train, alpha = 1, lambda = lambda_l)
 ```
 
-# Punto 5
-Calcular las predicciones para el conjunto de prueba usando Ridge
+# 5. Evaluación y Selección del Modelo Predictivo
+Para determinar el modelo más apropiado para propósitos predictivos en el mundo real, se evalúa el desempeño basándose **estrictamente en el Error Cuadrático Medio (ECM) sobre los 200 datos de prueba**, tal como se requiere metodológicamente. Además, se realiza un diagnóstico de residuos para descartar sesgos no lineales.
+
+
+Calcular las predicciones para el conjunto de prueba usando Ridge:
+
 ```{r}
 pred_ridge <- predict(modelo_ridge, s = lambda_r, newx = X_test)
 ```
 
-Calcular el Error Cuadrático Medio (ECM) para Ridge
+Calcular el Error Cuadrático Medio (ECM) para Ridge:
+
 ```{r}
 ecm_ridge <- mean((Y_test - pred_ridge)^2)
 cat("El ECM de Ridge en los datos de prueba es:", ecm_ridge, "\n")
 ```
 
-Calcular las predicciones para el conjunto de prueba usando Lasso
+Calcular las predicciones para el conjunto de prueba usando Lasso:
+
 ```{r}
 pred_lasso <- predict(modelo_lasso, s = lambda_l, newx = X_test)
 ```
 
-Calcular el Error Cuadrático Medio (ECM) para Lasso
+Calcular el Error Cuadrático Medio (ECM) para Lasso:
+
 ```{r}
 ecm_lasso <- mean((Y_test - pred_lasso)^2)
 cat("El ECM de Lasso en los datos de prueba es:", ecm_lasso, "\n")
 ```
-
-Determinar el modelo más apropiado
 ```{r}
-if(ecm_lasso < ecm_ridge) {
-  cat("\nConclusión: El modelo LASSO es el más apropiado para predicción ya que tiene un menor ECM.\n")
-  # Guardamos la selección para el siguiente punto
-  alpha_seleccionado <- 1 
-  lambda_seleccionado <- lambda_l
-} else {
-  cat("\nConclusión: El modelo RIDGE es el más apropiado para predicción ya que tiene un menor ECM.\n")
-  # Guardamos la selección para el siguiente punto
-  alpha_seleccionado <- 0
-  lambda_seleccionado <- lambda_r
-}
+
 ```
 
-# Punto 6
-Ajuste del modelo final con todos los datos
+Determinar el modelo más apropiado:
+```{r}
+# Lógica Diagnóstica y Visualización de Desempeño
+if(ecm_lasso < ecm_ridge) {
+  cat("\nConclusión: El modelo LASSO es el mas apropiado (ECM:", ecm_lasso, ").\n")
+  alpha_seleccionado <- 1 
+  lambda_seleccionado <- lambda_l
+  predicciones_finales <- pred_lasso
+} else {
+  cat("\nConclusión: El modelo RIDGE es el mas apropiado (ECM:", ecm_ridge, ").\n")
+  alpha_seleccionado <- 0
+  lambda_seleccionado <- lambda_r
+  predicciones_finales <- pred_ridge
+}
+
+# Crear un DataFrame para ggplot
+resultados_test <- data.frame(Real = Y_test, Predicho = as.numeric(predicciones_finales))
+
+# Gráfico de Real vs Predicho
+ggplot(resultados_test, aes(x = Real, y = Predicho)) +
+  geom_point(alpha = 0.6, color = "#2c3e50", size = 2) +
+  geom_abline(intercept = 0, slope = 1, color = "#e74c3c", linetype = "dashed", size = 1) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Diagnostico del Modelo: Real vs. Predicho",
+       subtitle = "La linea punteada roja representa la prediccion perfecta",
+       x = "Efectividad Real del Tratamiento", 
+       y = "Efectividad Predicha") +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+
+```{r}
+# DIAGNÓSTICO PROFUNDO: Sobreajuste y No-linealidad 
+library(ggplot2)
+
+# 1. Prueba de Sobreajuste (Train vs Test)
+pred_train_lasso <- predict(modelo_lasso, s = lambda_l, newx = X_train)
+ecm_train_lasso <- mean((Y_train - pred_train_lasso)^2)
+
+cat("\n--- PRUEBA DE REALIDAD ---\n")
+cat("ECM en Entrenamiento (Memoria):", ecm_train_lasso, "\n")
+cat("ECM en Prueba (Realidad):", ecm_lasso, "\n")
+cat("Diferencia:", ecm_lasso - ecm_train_lasso, "\n\n")
+
+# 2. Prueba de No-Linealidad (Analisis de Residuos)
+# Calculamos los residuos (Error = Real - Predicción)
+residuos_test <- Y_test - as.numeric(pred_lasso)
+df_residuos <- data.frame(Predicho = as.numeric(pred_lasso), Residuos = residuos_test)
+
+# Grafico de Residuos vs Valores Predichos
+ggplot(df_residuos, aes(x = Predicho, y = Residuos)) +
+  geom_point(alpha = 0.6, color = "#8e44ad", size = 2) +
+  geom_hline(yintercept = 0, color = "black", linetype = "dashed", size = 1) +
+  geom_smooth(method = "loess", color = "#e74c3c", se = FALSE) + # Línea de tendencia curva
+  theme_minimal(base_size = 14) +
+  labs(title = "Diagnostico de Residuos: Buscando No-Linealidad",
+       subtitle = "Si la linea roja se curva (U o onda), la relacion es no-lineal",
+       x = "Efectividad Predicha", 
+       y = "Residuo (Error)")
+```
+
+# 6. Ajuste del Modelo Definitivo (Full Dataset)
+
+
+Habiendo seleccionado el modelo y su respectivo parámetro de regularización, se procede a re-entrenar el algoritmo utilizando la totalidad de la información disponible (1200 líneas celulares). Esto maximiza el aprendizaje del modelo final antes de extraer la firma genómica.
+
 ```{r}
 modelo_final <- glmnet(x = X, y = Y, alpha = alpha_seleccionado, lambda = lambda_seleccionado)
 
 cat("El modelo final ha sido ajustado exitosamente con los 1200 datos.\n")
+
+
+coef_final <- coef(modelo_final, s=lambda_seleccionado)
+
+genes_activos <- which(coef_final != 0)
+
+#Excluimos el intercepto
+
+n_genes <- length(genes_activos)-1
+
+cat("El modelo final selecciono", n_genes, "genes de los 5000 originales.\n")
+
+importancia <- as.matrix(coef_final[genes_activos, , drop=FALSE])
+print(head(importancia[order(abs(importancia), decreasing = TRUE), , drop=FALSE], 11))
+
 ```
 
-# Punto 7
+# 7. Geometría de la Regularización: Trazas de Coeficientes
 
-Ajustamos el modelo con todos los datos y el alpha seleccionado para obtener la ruta completa
+El siguiente gráfico ilustra cómo el modelo contrae los 5000 coeficientes a medida que aumenta la fuerza de la penalización $\lambda$. Se ha implementado una jerarquía visual para destacar los 5 genes con mayor peso predictivo frente al ruido biológico de fondo que es progresivamente anulado.
+
+Ajustamos el modelo con todos los datos y el alpha seleccionado para obtener la ruta completa.
+
+A partir de lo anterior generamos la gráfica de las trazas. 
 ```{r}
+# Gráfico de Trazas con Jerarquía Visual
+library(dplyr)
+library(ggplot2)
+library(broom)
+
+# 1. Ajustar el modelo para las trazas
 modelo_trazas <- glmnet(x = X, y = Y, alpha = alpha_seleccionado)
+df_trazas <- tidy(modelo_trazas)
+
+# 2. Identificar los Top 5 genes más fuertes (en el lambda seleccionado)
+coef_final <- coef(modelo_final, s = lambda_seleccionado)
+importancia <- as.matrix(coef_final)
+df_coef_temp <- data.frame(Gen = rownames(importancia), Coeficiente = as.numeric(importancia))
+
+top_5_genes <- df_coef_temp %>%
+  filter(Gen != "(Intercept)") %>%
+  mutate(AbsCoef = abs(Coeficiente)) %>%
+  arrange(desc(AbsCoef)) %>%
+  head(5) %>%
+  pull(Gen)
+
+# 3. Crear una nueva columna para el color (Destacar Top 5, apagar el resto)
+df_trazas <- df_trazas %>%
+  filter(term != "(Intercept)") %>%
+  mutate(Categoria = ifelse(term %in% top_5_genes, term, "Otros 4995 Genes"))
+
+# 4. Generar el gráfico pulido
+ggplot(df_trazas, aes(x = log(lambda), y = estimate, group = term, color = Categoria, alpha = Categoria)) +
+  geom_line(size = 0.8) +
+  # Escalas manuales para forzar que 'Otros' sea gris y transparente
+  scale_color_manual(values = c(setNames(RColorBrewer::brewer.pal(5, "Set1"), top_5_genes), "Otros 4995 Genes" = "#bdc3c7")) +
+  scale_alpha_manual(values = c(setNames(rep(1, 5), top_5_genes), "Otros 4995 Genes" = 0.3)) +
+  geom_vline(xintercept = log(lambda_seleccionado), linetype = "dashed", color = "black", size = 1) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Evolucion de los Coeficientes (Penalizacion LASSO)",
+       subtitle = "Los 5 genes con mayor impacto predictivo estan resaltados frente al ruido de fondo",
+       x = "Log(Lambda) - Fuerza de Penalizacion", 
+       y = "Valor del Coeficiente",
+       color = "Genes Destacados") +
+  guides(alpha = "none") + # Ocultar leyenda de opacidad
+  theme(legend.position = "right")
 ```
 
-Generamos la gráfica de las trazas
+# 8. Conclusión
+
+El objetivo del estudio fue identificar una firma genómica predictiva de la efectividad de tratamientos anticancerígenos frente a un escenario de alta dimensionalidad ($n=1200 \leq p=5000$) y estricta multicolinealidad. Se seleccionó el modelo LASSO ($\alpha=1$) optimizado mediante la regla de un error estándar ($\lambda_{1se}$) para garantizar la máxima parsimonia, logrando un ECM en prueba de 28,551. El análisis profundo de diagnóstico reveló que, aunque el modelo exhibe la varianza esperada de la alta dimensionalidad (ECM Entrenamiento < ECM Prueba), el análisis de residuos (loess) demostró una ausencia total de sesgos estructurales o patrones no lineales (homocedasticidad y media cero). Esto confirma que la relación subyacente de los genes seleccionados por la penalización $L_1$ es predominantemente lineal, permitiendo extraer una firma genómica robusta, insesgada y biológicamente interpretable sin necesidad de recurrir a arquitecturas de mayor complejidad.
+
 ```{r}
-plot(modelo_trazas, xvar = "lambda", label = TRUE, 
-     ylab = "Coeficientes", xlab = "Log(Lambda)",
-     main = paste("Trazas de los coeficientes (Alpha =", alpha_seleccionado, ")"))
-abline(v = log(lambda_seleccionado), col = "red", lty = 2, lwd = 2)
-```
 
-# Punto 8
-Dado el objetivo inicial de determinar qué genes son relevantes para predecir la efectividad del tratamiento anticancerígeno en 1200 líneas celulares, el estudio enfrentó un problema de alta dimensionalidad con multicolinealidad estructural (p>n). Para superarlo, se evaluaron modelos de regularización, siendo la regresión Lasso (α=1) la seleccionada por presentar el menor Error Cuadrático Medio en la validación con el conjunto de prueba. Gracias a la penalización L1​ propia de Lasso, el modelo logró realizar una selección activa de variables, reduciendo a cero los coeficientes de los genes no informativos. Esto permitió extraer una firma genómica específica, descartando el ruido de la gran mayoría de los 5000 genes originales y obteniendo un modelo robusto y parsimonioso para la predicción de la efectividad terapéutica.
+#  Visualización de Importancia de Variables
+coef_final <- coef(modelo_final, s = lambda_seleccionado)
+importancia <- as.matrix(coef_final)
+df_coef <- data.frame(Gen = rownames(importancia), Coeficiente = as.numeric(importancia))
+
+# Filtrar ceros y el intercepto
+df_coef <- df_coef %>% 
+  filter(Gen != "(Intercept)" & Coeficiente != 0) %>%
+  mutate(AbsCoef = abs(Coeficiente),
+         Efecto = ifelse(Coeficiente > 0, "Positivo", "Negativo")) %>%
+  arrange(desc(AbsCoef)) %>%
+  head(15) # Tomar el Top 15
+
+# Gráfico de barras horizontales
+ggplot(df_coef, aes(x = reorder(Gen, AbsCoef), y = Coeficiente, fill = Efecto)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c("Positivo" = "#2980b9", "Negativo" = "#c0392b")) +
+  theme_minimal(base_size = 14) +
+  labs(title = "Firma Genomica: Top 15 Genes Predictivos",
+       subtitle = "Magnitud y direccion del efecto en la efectividad del tratamiento",
+       x = "Gen", y = "Peso del Coeficiente (Importancia)") +
+  theme(legend.position = "bottom")
+```
